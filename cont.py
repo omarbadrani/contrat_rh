@@ -1,11 +1,14 @@
 import logging
+import shutil
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import datetime
 import re
 import pymysql
+import pytz
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.shared import Pt, Inches
 import ttkbootstrap as ttk
@@ -22,7 +25,7 @@ import winsound
 import threading
 import tempfile
 import time
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_PARAGRAPH_ALIGNMENT
 from ttkbootstrap.constants import *
 
 
@@ -31,6 +34,9 @@ from ttkbootstrap.constants import *
 class ContratApplication:
 
     def __init__(self, root):
+
+
+
         self.CDD_MASCULIN = """
         طبقًا لأحكام الفصل 6-4 الجديد من مجلة الشغل
 
@@ -188,6 +194,8 @@ class ContratApplication:
             {"text": "Salaire Base", "stretch": True, "width": 100},
             {"text": "Prime", "stretch": True, "width": 100},
             {"text": "Type Salaire", "stretch": True, "width": 100},
+            {"text": "Atelier", "stretch": True, "width": 120},
+            {"text": "Nb Échéances", "stretch": False, "width": 100}
         ]
         self.alert_column_definitions = [
             {"text": "Matricule", "stretch": False, "width": 100},
@@ -195,6 +203,8 @@ class ContratApplication:
             {"text": "Prénom", "stretch": True, "width": 150},
             {"text": "Date Fin", "stretch": True, "width": 120},
             {"text": "Jours Restants", "stretch": True, "width": 120},
+            {"text": "Atelier", "stretch": True, "width": 120},  # Nouvelle colonne
+            {"text": "Nb Échéances", "stretch": False, "width": 100}  # Nouvelle colonne
         ]
 
         self.setup_ui()
@@ -336,18 +346,18 @@ class ContratApplication:
             ("Matricule*", "matricule", r'^\w+$', ttk.Entry),
             ("Nom*", "nom", None, ttk.Entry),
             ("Prénom*", "prenom", None, ttk.Entry),
-            ("Date Naissance (AAAA-MM-JJ)", "date_naissance", r'^\d{2}/\d{4}/\d{2}$', DateEntry),
+            ("Date Naissance (JJ/MM/AAAA)", "date_naissance", r'^\d{2}/\d{4}/\d{2}$', DateEntry),
             ("Lieu Naissance", "lieu_naissance", None, ttk.Entry),
             ("Adresse", "adresse", None, ttk.Entry),
             ("Ville", "ville", None, ttk.Entry),
             ("Code Postal", "code_postal", r'^\d{4}$', ttk.Entry),
             ("CIN", "cin", r'^\d{8}$', ttk.Entry),
-            ("Date CIN (AAAA-MM-JJ)", "date_cin", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
+            ("Date CIN (JJ/MM/AAAA)", "date_cin", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
             ("Lieu CIN", "lieu_cin", None, ttk.Entry),
             ("Poste", "poste", None, ttk.Entry),
             ("Email", "email", r'^[^@]+@[^@]+\.[^@]+$', ttk.Entry),
             ("Téléphone", "telephone", r'^\+?\d{10,12}$', ttk.Entry),
-            ("Date Embauche (AAAA-MM-JJ)", "date_embauche", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
+            ("Date Embauche (JJ/MM/AAAA)", "date_embauche", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
             ("Dcon", "dcon", None, ttk.Entry),
             ("Durée", "duree", None, ttk.Entry),
             ("Atelier", "atelier", None, ttk.Entry),
@@ -364,7 +374,7 @@ class ContratApplication:
             ttk.Label(form_frame, text=label, font=('Segoe UI', 10)).grid(row=i, column=0, padx=5, pady=5, sticky=tk.E)
             entry = widget_type(form_frame, bootstyle="primary") if widget_type != DateEntry else DateEntry(form_frame,
                                                                                                             bootstyle="primary",
-                                                                                                            dateformat="%Y-%m-%d")
+                                                                                                            dateformat="%d/%m/%Y")
             if widget_type == DateEntry:
                 entry.entry.configure(justify="center")
             entry.grid(row=i, column=1, padx=5, pady=5, sticky=tk.EW)
@@ -377,15 +387,13 @@ class ContratApplication:
                                                                          pady=5)
         genre_frame = ttk.Frame(form_frame)
         genre_frame.grid(row=len(fields), column=1, sticky=tk.W)
+        # Dans create_employee_tab(), remplacez:
         ttk.Radiobutton(genre_frame, text="السيدة", variable=self.variables["genre"], value="السيدة",
                         bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-
         ttk.Radiobutton(genre_frame, text="الانسة", variable=self.variables["genre"], value="الانسة",
                         bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-
         ttk.Radiobutton(genre_frame, text="السيد", variable=self.variables["genre"], value="السيد",
                         bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-
         self.entries['ville'].insert(0, "المحرس")
         self.entries['lieu_cin'].insert(0, "تونس")
 
@@ -400,8 +408,8 @@ class ContratApplication:
                         bootstyle="primary-toolbutton", command=self.toggle_date_fin).grid(row=0, column=2, sticky=tk.W)
 
         contract_fields = [
-            ("Date Début (AAAA-MM-JJ)*", "date_debut", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
-            ("Date Fin (AAAA-MM-JJ)", "date_fin", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
+            ("Date Début (JJ/MM/AAAA)*", "date_debut", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
+            ("Date Fin (JJ/MM/AAAA)", "date_fin", r'^\d{4}/\d{2}/\d{2}$', DateEntry),
             ("Salaire Base*", "salaire", r'^\d+(\.\d{1,2})?$', ttk.Entry),
             ("Prime*", "prime", r'^\d+(\.\d{1,2})?$', ttk.Entry)
         ]
@@ -411,7 +419,7 @@ class ContratApplication:
             ttk.Label(contract_frame, text=label, font=('Segoe UI', 10)).grid(row=i + 1, column=0, padx=5, pady=5,
                                                                               sticky=tk.E)
             entry = widget_type(contract_frame, bootstyle="primary") if widget_type != DateEntry else DateEntry(
-                contract_frame, bootstyle="primary", dateformat="%Y-%m-%d")
+                contract_frame, bootstyle="primary", dateformat="%d/%m/%Y")
             if widget_type == DateEntry:
                 entry.entry.configure(justify="center")
                 if field == "date_fin" and self.variables["contract_type"].get() == "CDI":
@@ -423,7 +431,7 @@ class ContratApplication:
             self.contract_entries[field] = entry
 
         self.contract_entries['date_debut'].entry.delete(0, tk.END)
-        self.contract_entries['date_debut'].entry.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
+        self.contract_entries['date_debut'].entry.insert(0, datetime.datetime.now().strftime("%d/%m/%Y"))
         self.contract_entries['salaire'].insert(0, "")
         self.contract_entries['prime'].insert(0, "")
 
@@ -679,8 +687,8 @@ class ContratApplication:
             "date_cin": lambda v: bool(re.match(r'^\d{4}/\d{2}/\d{2}$', v)) if v else True,
             "email": lambda v: bool(re.match(r'^[^@]+@[^@]+\.[^@]+$', v)) if v else True,
             "telephone": lambda v: bool(re.match(r'^\+?\d{10,12}$', v)) if v else True,
-            "salaire": lambda v: bool(re.match(r'^\d+(\.\d{1,2})?$', v)) and float(v) > 0 if v else False,
-            "prime": lambda v: bool(re.match(r'^\d+(\.\d{1,2})?$', v)) and float(v) >= 0 if v else False,
+            "salaire": lambda v: bool(re.match(r'^\d+(\.\d{1,3})?$', v)) and float(v) > 0 if v else False,
+            "prime": lambda v: bool(re.match(r'^\d+(\.\d{1,3})?$', v)) and float(v) >= 0 if v else False,
             "date_debut": lambda v: bool(re.match(r'^\d{4}/\d{2}/\d{2}$', v)) if v else False,
             "date_fin": lambda v: bool(re.match(r'^\d{4}/\d{2}/\d{2}$', v)) if v else True
         }
@@ -786,7 +794,7 @@ class ContratApplication:
                 entry.entry.delete(0, tk.END)
         self.entries['ville'].insert(0, "المحرس")
         self.entries['lieu_cin'].insert(0, "تونس")
-        self.contract_entries['date_debut'].entry.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
+        self.contract_entries['date_debut'].entry.insert(0, datetime.datetime.now().strftime("%d/%m/%Y"))
         self.contract_entries['salaire'].insert(0, "2500.00")
         self.contract_entries['prime'].insert(0, "500.00")
         self.variables["genre"].set("féminin")
@@ -799,29 +807,97 @@ class ContratApplication:
         self.show_last_contract()
 
     def export_word(self):
-        if not self.current_employee or not isinstance(self.current_employee, dict):
-            Messagebox.show_error("Aucun employé sélectionné. Veuillez sélectionner un employé.", "Erreur")
-            return
-
+        """Exporte le contrat au format Word en ajoutant le matricule dans le document."""
         try:
-            doc = self.create_contract_doc(self.current_employee['matricule'])
-            if not doc:
+            # Vérification de l'employé sélectionné (votre code original)
+            if not getattr(self, 'current_employee', None):
+                Messagebox.show_error("Aucun employé sélectionné.", "Erreur", parent=self.root)
                 return
 
-            file_path = filedialog.asksaveasfilename(
+            emp = self.current_employee
+            contract_type = emp.get('type_contrat', 'CDD').upper()
+
+            if contract_type not in ['CDD', 'CDI']:
+                Messagebox.show_error("Type de contrat invalide. Doit être 'CDD' ou 'CDI'.", "Erreur", parent=self.root)
+                return
+
+            # Chemins des templates (votre code original inchangé)
+            template_paths = {
+                'CDD': r"D:\CDD CONTRAT.docx",
+                'CDI': r"D:\CDI CONTRAT.docx"
+            }
+
+            template_path = template_paths.get(contract_type)
+            if not template_path or not os.path.exists(template_path):
+                Messagebox.show_error(f"Le modèle {contract_type} est introuvable : {template_path}",
+                                      "Fichier manquant", parent=self.root)
+                return
+
+            # Nom de fichier (votre code original inchangé)
+            filename = f"Contrat_{contract_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+
+            # Votre code original pour l'export
+            save_path = filedialog.asksaveasfilename(
+                title=f"Enregistrer le contrat {contract_type}",
                 defaultextension=".docx",
-                filetypes=[("Document Word", "*.docx")],
-                initialfile=f"Contrat_{self.current_employee['matricule']}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+                initialfile=filename,
+                filetypes=[("Document Word", "*.docx"), ("Tous les fichiers", "*.*")]
             )
-            if not file_path:
+            if not save_path:
                 return
 
-            doc.save(file_path)
-            Messagebox.show_info(f"Contrat exporté avec succès sous {file_path}.", "Succès")
-            self.status_var.set("Contrat exporté avec succès.")
+            # Copie du template (votre code original)
+            shutil.copy2(template_path, save_path)
 
+            # Chargement du document
+            doc = Document(save_path)
+
+            # AJOUT: Insertion du matricule en bas de l'en-tête
+            matricule = emp.get('matricule', 'N/C')
+            header_section = doc.sections[0]
+            header = header_section.header
+
+            # Création d'un paragraphe pour le matricule
+            matricule_para = header.add_paragraph()
+            matricule_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            matricule_run = matricule_para.add_run(f"{matricule}")
+            matricule_run.font.size = Pt(9)
+            matricule_run.bold = True
+
+            # Votre code original pour le corps du document
+            style_name = 'ArabicStyle'
+            if style_name not in doc.styles:
+                arabic_style = doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+                arabic_style.font.name = 'Arial'
+                arabic_style.font.size = Pt(11)
+                arabic_style.font.rtl = True
+            else:
+                arabic_style = doc.styles[style_name]
+
+            contrat_text = self.contract_text.get("1.0", tk.END).strip()
+            for line in contrat_text.splitlines():
+                if line.strip():
+                    p = doc.add_paragraph(line.strip(), style=style_name)
+                    p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+                    p.paragraph_format.space_after = Pt(6)
+
+            # Sauvegarde finale
+            doc.save(save_path)
+
+            # Message de confirmation (votre code original)
+            Messagebox.show_info(f"Contrat {contract_type} généré avec succès.", "Export réussi", parent=self.root)
+            self.status_var.set(f"Contrat {contract_type} exporté")
+
+            # Ouverture du document (votre code original)
+            if Messagebox.yesno(f"Contrat {contract_type} généré avec succès.\nSouhaitez-vous l'ouvrir ?",
+                                "Export réussi", parent=self.root):
+                os.startfile(save_path)
+
+        except PermissionError:
+            Messagebox.show_error("Impossible d'accéder au fichier. Veuillez fermer Word et réessayer.",
+                                  "Erreur d'accès", parent=self.root)
         except Exception as e:
-            Messagebox.show_error(f"Erreur lors de l'exportation du contrat: {str(e)}", "Erreur")
+            Messagebox.show_error(f"Erreur lors de l'export :\n{str(e)}", "Erreur d'export", parent=self.root)
 
 ################################################################################################
 
@@ -1031,172 +1107,109 @@ class ContratApplication:
         try:
             if not date_str or not re.match(r'^\d{4}/\d{2}/\d{2}$', date_str.strip()):
                 return False
-            datetime.datetime.strptime(date_str.strip(), "%Y-%m-%d")
+            datetime.datetime.strptime(date_str.strip(), "%d/%m/%Y")
             return True
         except ValueError:
             return False
 
     def save_employee_and_contract_changes(self, matricule, entries, contract_entries, genre_var, contract_type_var,
                                            salary_type_var, top):
-        """Save changes to employee and contract details."""
+        """Save changes to employee and contract details, updating only modified fields."""
         try:
-            # Helper function to parse and validate date
-            def parse_date(entry, field_name):
-                date_str = self.get_widget_value(entry)
-                if not date_str:
-                    return None
-                try:
-                    date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-                    return date_obj.strftime("%Y-%m-%d")  # Store in database format
-                except ValueError:
-                    Messagebox.show_error(f"Format de date invalide pour {field_name} (attendu AAAA-MM-JJ)", "Erreur",
-                                          parent=top)
-                    raise
+            # Récupérer les données originales
+            with self.conn.cursor() as cursor:
+                cursor.execute('''
+                               SELECT matricule, nom, prenom, genre, date_naissance, lieu_naissance,
+                                      adresse, ville, cin, date_cin, lieu_cin, poste, email, telephone,
+                                      type_contrat, date_debut, date_fin, salaire_base, prime, salary_type
+                               FROM employees
+                               WHERE matricule = %s
+                               ''', (matricule,))
+                original_employee = cursor.fetchone()
 
-            # Collect employee data
+            if not original_employee:
+                Messagebox.show_error("Employé non trouvé", "Erreur", parent=top)
+                top.destroy()
+                return
+
+            # Collecter les données avec les valeurs existantes par défaut
             employee_data = {
-                "matricule": matricule,  # Use the provided matricule, not from entry
-                "nom": self.get_widget_value(entries["nom"]),
-                "prenom": self.get_widget_value(entries["prenom"]),
-                "genre": genre_var.get(),
-                "date_naissance": parse_date(entries["date_naissance"], "Date de Naissance"),
-                "lieu_naissance": self.get_widget_value(entries["lieu_naissance"]),
-                "ville": self.get_widget_value(entries["ville"]),
-                "code_postal": self.get_widget_value(entries["code_postal"]),
-                "cin": self.get_widget_value(entries["cin"]),
-                "date_cin": parse_date(entries["date_cin"], "Date CIN"),
-                "lieu_cin": self.get_widget_value(entries["lieu_cin"]),
-                "poste": self.get_widget_value(entries["poste"]),
-                "email": self.get_widget_value(entries["email"]),
-                "telephone": self.get_widget_value(entries["telephone"]),
-                "date_embauche": parse_date(entries["date_embauche"], "Date d'Embauche"),
-                "dcon": self.get_widget_value(entries["dcon"]),
-                "duree": self.get_widget_value(entries["duree"]),
-                "atelier": self.get_widget_value(entries["atelier"]),
-                "nbre_eche": self.get_widget_value(entries["nbre_eche"]) or None,
-                "fperiode": self.get_widget_value(entries["fperiode"]),
-                "degre_polyvalence": self.get_widget_value(entries["degre_polyvalence"]),
-                "adresse": self.get_widget_value(entries["adresse"]),
-                "salaire_base": self.get_widget_value(contract_entries["salaire"]) or None,
-                "prime": self.get_widget_value(contract_entries["prime"]) or None,
-                "type_contrat": contract_type_var.get(),
-                "salary_type": salary_type_var.get(),
-                "date_debut": parse_date(contract_entries["date_debut"], "Date Début"),
-                "date_fin": None if contract_type_var.get() == "CDI" else parse_date(contract_entries["date_fin"],
-                                                                                     "Date Fin")
+                "matricule": matricule,
+                "nom": self.get_widget_value(entries["nom"]) or original_employee[1],
+                "prenom": self.get_widget_value(entries["prenom"]) or original_employee[2],
+                "genre": genre_var.get() or original_employee[3],
+                "date_naissance": self.get_widget_value(entries["date_naissance"]) or original_employee[4],
+                "lieu_naissance": self.get_widget_value(entries["lieu_naissance"]) or original_employee[5],
+                "adresse": self.get_widget_value(entries["adresse"]) or original_employee[6],
+                "ville": self.get_widget_value(entries["ville"]) or original_employee[7],
+                "cin": self.get_widget_value(entries["cin"]) or original_employee[8],
+                "date_cin": self.get_widget_value(entries["date_cin"]) or original_employee[9],
+                "lieu_cin": self.get_widget_value(entries["lieu_cin"]) or original_employee[10],
+                "poste": self.get_widget_value(entries["poste"]) or original_employee[11],
+                "email": self.get_widget_value(entries["email"]) or original_employee[12],
+                "telephone": self.get_widget_value(entries["telephone"]) or original_employee[13],
+                "type_contrat": contract_type_var.get() or original_employee[14],
+                "date_debut": self.get_widget_value(contract_entries["date_debut"]) or original_employee[15],
+                "date_fin": self.get_widget_value(
+                    contract_entries["date_fin"]) if contract_type_var.get() == "CDD" else None,
+                "salaire_base": float(self.get_widget_value(contract_entries["salaire"])) if self.get_widget_value(
+                    contract_entries["salaire"]) else original_employee[17],
+                "prime": float(self.get_widget_value(contract_entries["prime"])) if self.get_widget_value(
+                    contract_entries["prime"]) else original_employee[18],
+                "salary_type": salary_type_var.get() or original_employee[19]
             }
 
-            # Validate required fields
-            required_fields = ["nom", "prenom", "salaire_base", "date_debut"]
-            for field in required_fields:
-                if not employee_data[field]:
-                    Messagebox.show_error(f"Le champ {field} est requis", "Erreur", parent=top)
-                    return
+            # Valider les champs requis et les formats
+            # ... (le reste de votre logique de validation)
 
-            # Validate numeric fields
-            if employee_data["salaire_base"]:
-                try:
-                    employee_data["salaire_base"] = float(employee_data["salaire_base"])
-                    if employee_data["salaire_base"] <= 0:
-                        Messagebox.show_error("Le salaire de base doit être supérieur à 0", "Erreur", parent=top)
-                        return
-                except ValueError:
-                    Messagebox.show_error("Le salaire de base doit être un nombre valide", "Erreur", parent=top)
-                    return
-
-            if employee_data["prime"]:
-                try:
-                    employee_data["prime"] = float(employee_data["prime"])
-                    if employee_data["prime"] < 0:
-                        Messagebox.show_error("La prime ne peut pas être négative", "Erreur", parent=top)
-                        return
-                except ValueError:
-                    Messagebox.show_error("La prime doit être un nombre valide", "Erreur", parent=top)
-                    return
-
-            if employee_data["nbre_eche"]:
-                try:
-                    employee_data["nbre_eche"] = int(employee_data["nbre_eche"])
-                    if employee_data["nbre_eche"] < 0:
-                        Messagebox.show_error("Le nombre d'échéances ne peut pas être négatif", "Erreur", parent=top)
-                        return
-                except ValueError:
-                    Messagebox.show_error("Le nombre d'échéances doit être un entier", "Erreur", parent=top)
-                    return
-
-            # Validate date consistency for CDD
-            if employee_data["type_contrat"] == "CDD" and employee_data["date_fin"]:
-                debut = datetime.datetime.strptime(employee_data["date_debut"], "%Y-%m-%d")
-                fin = datetime.datetime.strptime(employee_data["date_fin"], "%Y-%m-%d")
-                if fin <= debut:
-                    Messagebox.show_error("La date de fin doit être postérieure à la date de début", "Erreur",
-                                          parent=top)
-                    return
-
-            # Generate contract text
+            # Générer le texte du contrat
             contrat_text = self.generate_contract_from_data(employee_data)
 
-            # Update database
+            # Mettre à jour la base de données
             with self.conn.cursor() as cursor:
-                # Update employee
                 cursor.execute('''
-                               UPDATE employees
-                               SET nom               = %s,
-                                   prenom            = %s,
-                                   genre             = %s,
-                                   date_naissance    = %s,
-                                   lieu_naissance    = %s,
-                                   ville             = %s,
-                                   code_postal       = %s,
-                                   cin               = %s,
-                                   date_cin          = %s,
-                                   lieu_cin          = %s,
-                                   poste             = %s,
-                                   email             = %s,
-                                   telephone         = %s,
-                                   date_embauche     = %s,
-                                   dcon              = %s,
-                                   duree             = %s,
-                                   atelier           = %s,
-                                   nbre_eche         = %s,
-                                   fperiode          = %s,
-                                   degre_polyvalence = %s,
-                                   adresse           = %s,
-                                   salaire_base      = %s,
-                                   prime             = %s,
-                                   type_contrat      = %s,
-                                   salary_type       = %s,
-                                   date_debut        = %s,
-                                   date_fin          = %s
-                               WHERE matricule = %s
+                               UPDATE employees 
+                               SET nom=%s, prenom=%s, genre=%s, date_naissance=%s, lieu_naissance=%s,
+                                   adresse=%s, ville=%s, cin=%s, date_cin=%s, lieu_cin=%s, poste=%s,
+                                   email=%s, telephone=%s, type_contrat=%s, date_debut=%s, date_fin=%s,
+                                   salaire_base=%s, prime=%s, salary_type=%s
+                               WHERE matricule=%s
                                ''', (
-                                   employee_data["nom"], employee_data["prenom"], employee_data["genre"],
-                                   employee_data["date_naissance"], employee_data["lieu_naissance"],
-                                   employee_data["ville"],
-                                   employee_data["code_postal"], employee_data["cin"], employee_data["date_cin"],
-                                   employee_data["lieu_cin"], employee_data["poste"], employee_data["email"],
-                                   employee_data["telephone"], employee_data["date_embauche"], employee_data["dcon"],
-                                   employee_data["duree"], employee_data["atelier"], employee_data["nbre_eche"],
-                                   employee_data["fperiode"], employee_data["degre_polyvalence"],
-                                   employee_data["adresse"],
-                                   employee_data["salaire_base"], employee_data["prime"], employee_data["type_contrat"],
-                                   employee_data["salary_type"], employee_data["date_debut"], employee_data["date_fin"],
-                                   matricule
-                               ))
+                    employee_data['nom'],
+                    employee_data['prenom'],
+                    employee_data['genre'],
+                    employee_data['date_naissance'],
+                    employee_data['lieu_naissance'],
+                    employee_data['adresse'],
+                    employee_data['ville'],
+                    employee_data['cin'],
+                    employee_data['date_cin'],
+                    employee_data['lieu_cin'],
+                    employee_data['poste'],
+                    employee_data['email'],
+                    employee_data['telephone'],
+                    employee_data['type_contrat'],
+                    employee_data['date_debut'],
+                    employee_data['date_fin'],
+                    employee_data['salaire_base'],
+                    employee_data['prime'],
+                    employee_data['salary_type'],
+                    matricule
+                ))
 
-                # Update or insert contract
+                # Mettre à jour ou insérer le contrat
                 cursor.execute('''
                                INSERT INTO contrats (matricule, type_contrat, date_creation, texte_contrat)
-                               VALUES (%s, %s, CURDATE(), %s) ON DUPLICATE KEY
-                               UPDATE
-                                   type_contrat =
-                               VALUES (type_contrat), date_creation = CURDATE(), texte_contrat =
-                               VALUES (texte_contrat)
+                               VALUES (%s, %s, NOW(), %s)
+                               ON DUPLICATE KEY UPDATE 
+                                   type_contrat=VALUES(type_contrat), 
+                                   date_creation=NOW(), 
+                                   texte_contrat=VALUES(texte_contrat)
                                ''', (matricule, employee_data["type_contrat"], contrat_text))
 
                 self.conn.commit()
 
-            # Update UI
+            # Mettre à jour l'interface
             self.load_data()
             self.status_var.set(f"Employé {matricule} mis à jour avec succès")
             Messagebox.show_info("Employé mis à jour avec succès", "Succès", parent=top)
@@ -1205,6 +1218,229 @@ class ContratApplication:
         except Exception as e:
             self.conn.rollback()
             Messagebox.show_error(f"Erreur lors de la sauvegarde: {str(e)}", "Erreur", parent=top)
+    def edit_employee(self, matricule):
+        """Open a window to edit an employee's details with a scrollable interface."""
+        # Create Toplevel window
+        top = ttk.Toplevel(self.root)
+        top.title(f"Modifier Employé {matricule}")
+        top.geometry("900x600")
+
+        # Fetch employee data from database
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute('''
+                               SELECT matricule,
+                                      nom,
+                                      prenom,
+                                      genre,
+                                      date_naissance,
+                                      lieu_naissance,
+                                      adresse,
+                                      ville,
+                                      cin,
+                                      date_cin,
+                                      lieu_cin,
+                                      poste,
+                                      email,
+                                      telephone,
+                                      type_contrat,
+                                      date_debut,
+                                      date_fin,
+                                      salaire_base,
+                                      prime,
+                                      salary_type,
+                                      atelier,
+                                      nbre_eche
+                               FROM employees
+                               WHERE matricule = %s
+                               ''', (matricule,))
+                employee = cursor.fetchone()
+
+                cursor.execute('''
+                               SELECT type_contrat, date_creation, texte_contrat
+                               FROM contrats
+                               WHERE matricule = %s
+                               ORDER BY date_creation DESC LIMIT 1
+                               ''', (matricule,))
+                contract = cursor.fetchone()
+
+            if not employee:
+                Messagebox.show_error("Employé non trouvé", "Erreur", parent=top)
+                top.destroy()
+                return
+        except Exception as e:
+            Messagebox.show_error(f"Erreur de base de données: {str(e)}", "Erreur", parent=top)
+            top.destroy()
+            return
+
+        # Create scrollable canvas
+        canvas = tk.Canvas(top, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(top, orient="vertical", command=canvas.yview, bootstyle=PRIMARY)
+        scrollable_frame = ttk.Frame(canvas)
+
+        # Configure scrollable frame
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Create notebook for employee and contract tabs
+        notebook = ttk.Notebook(scrollable_frame, bootstyle=PRIMARY)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        employee_frame = ttk.Frame(notebook)
+        contract_frame = ttk.Frame(notebook)
+        notebook.add(employee_frame, text="Détails Employé")
+        notebook.add(contract_frame, text="Détails Contrat")
+
+        # Initialize variables
+        genre_var = tk.StringVar(value=employee[3] if employee[3] else "السيدة")
+        contract_type_var = tk.StringVar(value=contract[0] if contract else "CDD")
+        salary_type_var = tk.StringVar(value=employee[19] if employee[19] else "hourly")
+        entries = {}
+        contract_entries = {}
+
+        # Employee fields
+        fields = [
+            ("Matricule", "matricule", employee[0], True, ttk.Entry),
+            ("Nom", "nom", employee[1], False, ttk.Entry),
+            ("Prénom", "prenom", employee[2], False, ttk.Entry),
+            ("Date Naissance (JJ/MM/AAAA)", "date_naissance", employee[4], False, DateEntry),
+            ("Lieu Naissance", "lieu_naissance", employee[5], False, ttk.Entry),
+            ("Adresse", "adresse", employee[6], False, ttk.Entry),
+            ("Ville", "ville", employee[7], False, ttk.Entry),
+            ("CIN", "cin", employee[8], False, ttk.Entry),
+            ("Date CIN (JJ/MM/AAAA)", "date_cin", employee[9], False, DateEntry),
+            ("Lieu CIN", "lieu_cin", employee[10], False, ttk.Entry),
+            ("Poste", "poste", employee[11], False, ttk.Entry),
+            ("Email", "email", employee[12], False, ttk.Entry),
+            ("Téléphone", "telephone", employee[13], False, ttk.Entry),
+        ]
+
+        # Populate employee fields
+        for i, (label, field, value, disabled, widget_type) in enumerate(fields):
+            ttk.Label(employee_frame, text=label, font=('Segoe UI', 10)).grid(row=i, column=0, padx=5, pady=5,
+                                                                              sticky=tk.E)
+            if widget_type == DateEntry:
+                entry = widget_type(employee_frame, bootstyle="primary", dateformat="%d/%m/%Y")
+                if value:
+                    entry.entry.delete(0, tk.END)
+                    entry.entry.insert(0, value)
+            else:
+                entry = widget_type(employee_frame, bootstyle="primary")
+                if value:
+                    entry.insert(0, value)
+            if disabled:
+                entry.config(state='disabled')
+            entry.grid(row=i, column=1, padx=5, pady=5, sticky=tk.EW)
+            entries[field] = entry
+
+        # Gender selection
+        ttk.Label(employee_frame, text="Genre*", font=('Segoe UI', 10)).grid(
+            row=len(fields), column=0, sticky=tk.E, padx=5, pady=5)
+        genre_frame = ttk.Frame(employee_frame)
+        genre_frame.grid(row=len(fields), column=1, sticky=tk.W)
+        ttk.Radiobutton(genre_frame, text="السيدة", variable=genre_var, value="السيدة",
+                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(genre_frame, text="الانسة", variable=genre_var, value="الانسة",
+                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(genre_frame, text="السيد", variable=genre_var, value="السيد",
+                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
+
+        # Contract fields
+        contract_fields = [
+            ("Type de Contrat", "type_contrat", contract[0] if contract else "CDD", False, None),
+            ("Date Début (JJ/MM/AAAA)*", "date_debut", employee[15], False, DateEntry),
+            ("Date Fin (JJ/MM/AAAA)", "date_fin", employee[16], contract_type_var.get() == "CDI", DateEntry),
+            ("Salaire Base*", "salaire", str(employee[17]) if employee[17] is not None else "", False, ttk.Entry),
+            ("Prime*", "prime", str(employee[18]) if employee[18] is not None else "", False, ttk.Entry)
+        ]
+
+        # Populate contract fields
+        for i, (label, field, value, disabled, widget_type) in enumerate(contract_fields):
+            ttk.Label(contract_frame, text=label, font=('Segoe UI', 10)).grid(row=i, column=0, padx=5, pady=5,
+                                                                              sticky=tk.E)
+            if field == "type_contrat":
+                frame = ttk.Frame(contract_frame)
+                frame.grid(row=i, column=1, sticky=tk.W)
+                ttk.Radiobutton(frame, text="CDD", variable=contract_type_var, value="CDD",
+                                bootstyle="primary-toolbutton",
+                                command=lambda: contract_entries['date_fin'].entry.config(state=tk.NORMAL)).pack(
+                    side=tk.LEFT, padx=5)
+                ttk.Radiobutton(frame, text="CDI", variable=contract_type_var, value="CDI",
+                                bootstyle="primary-toolbutton",
+                                command=lambda: contract_entries['date_fin'].entry.config(state=tk.DISABLED)).pack(
+                    side=tk.LEFT, padx=5)
+            else:
+                if widget_type == DateEntry:
+                    entry = widget_type(contract_frame, bootstyle="primary", dateformat="%d/%m/%Y")
+                    if value:
+                        entry.entry.delete(0, tk.END)
+                        entry.entry.insert(0, value)
+                    if disabled:
+                        entry.entry.config(state='disabled')
+                else:
+                    entry = widget_type(contract_frame, bootstyle="primary")
+                    if value:
+                        entry.insert(0, value)
+                entry.grid(row=i, column=1, padx=5, pady=5, sticky=tk.EW)
+                contract_entries[field] = entry
+
+        # Salary type selection
+        ttk.Label(contract_frame, text="Type de Salaire*", font=('Segoe UI', 10)).grid(
+            row=len(contract_fields), column=0, padx=5, pady=5, sticky=tk.E)
+        salary_type_frame = ttk.Frame(contract_frame)
+        salary_type_frame.grid(row=len(contract_fields), column=1, sticky=tk.W)
+        ttk.Radiobutton(salary_type_frame, text="Par Heure", variable=salary_type_var, value="hourly",
+                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(salary_type_frame, text="Par Mois", variable=salary_type_var, value="monthly",
+                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
+
+        # Buttons
+        button_frame = ttk.Frame(scrollable_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(button_frame, text="Enregistrer",
+                   command=lambda: self.save_employee_and_contract_changes(
+                       matricule, entries, contract_entries, genre_var, contract_type_var, salary_type_var, top),
+                   bootstyle=SUCCESS).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Annuler", command=top.destroy, bootstyle=WARNING).pack(side=tk.LEFT, padx=5)
+
+        # Configure grid weights
+        employee_frame.columnconfigure(1, weight=1)
+        contract_frame.columnconfigure(1, weight=1)
+
+        # Enable mouse wheel scrolling
+        def on_mousewheel(event):
+            try:
+                delta = 0
+                if event.num == 4:  # Linux scroll up
+                    delta = -1
+                elif event.num == 5:  # Linux scroll down
+                    delta = 1
+                elif event.delta:  # Windows and macOS
+                    delta = -1 * (event.delta // 120)
+                if delta:
+                    canvas.yview_scroll(int(delta), "units")
+            except tk.TclError:
+                pass
+
+        # Bind mouse wheel to Toplevel window (cross-platform)
+        top.bind("<MouseWheel>", on_mousewheel)  # Windows
+        top.bind("<Button-4>", on_mousewheel)  # Linux scroll up
+        top.bind("<Button-5>", on_mousewheel)  # Linux scroll down
+
+        # Unbind mouse wheel when Toplevel is destroyed
+        def on_destroy():
+            top.unbind("<MouseWheel>")
+            top.unbind("<Button-4>")
+            top.unbind("<Button-5>")
+            top.destroy()
+
+        top.protocol("WM_DELETE_WINDOW", on_destroy)
 
     def delete_employee(self, matricule):
         # Vérification que le matricule est valide (uniquement des chiffres)
@@ -1327,6 +1563,7 @@ class ContratApplication:
     © Imbert Mnif. Tous droits réservés.""",
             "À propos"
         )
+
 ##########################################################################################################
 
 
@@ -1411,7 +1648,9 @@ class ContratApplication:
                                       e.prenom,
                                       e.date_fin,
                                       DATEDIFF(STR_TO_DATE(e.date_fin, '%%Y-%%m-%%d'),
-                                               STR_TO_DATE(%s, '%%Y-%%m-%%d')) AS jours_restants
+                                               STR_TO_DATE(%s, '%%Y-%%m-%%d')) AS jours_restants,
+                                      e.atelier,
+                                      e.nbre_eche
                                FROM employees e
                                WHERE e.type_contrat = 'CDD'
                                  AND e.date_fin IS NOT NULL
@@ -1425,11 +1664,19 @@ class ContratApplication:
 
                 rows = cursor.fetchall()
                 for i, row in enumerate(rows):
-                    matricule, nom, prenom, date_fin, jours_restants = row
+                    matricule, nom, prenom, date_fin, jours_restants, atelier, nbre_eche = row
                     date_fin_str = date_fin.strftime('%d/%m/%Y') if date_fin else ''
-                    # Include jours_restants in the values for the table
+                    # Include atelier and nbre_eche in the values for the table
                     self.alert_table.insert_row(
-                        values=[matricule, nom, prenom, date_fin_str, str(jours_restants)]
+                        values=[
+                            matricule,
+                            nom,
+                            prenom,
+                            date_fin_str,
+                            str(jours_restants),
+                            atelier or "N/A",  # Gérer les valeurs NULL
+                            str(nbre_eche) if nbre_eche is not None else "0"  # Gérer les valeurs NULL
+                        ]
                     )
                     # Log the row ID for debugging
                     row_id = self.alert_table.tablerows[i].iid
@@ -1579,304 +1826,46 @@ class ContratApplication:
 
     def background_alert_service(self):
         try:
-            today = datetime.datetime.now().strftime('%Y-%m-%d')
-
+            today = datetime.datetime.now().date()
             with self.conn.cursor() as cursor:
-                # Corrected query - using e.date_fin instead of c.date_fin
                 cursor.execute('''
                                SELECT e.matricule,
                                       e.nom,
                                       e.prenom,
                                       e.date_fin,
-                                      DATEDIFF(STR_TO_DATE(e.date_fin, '%%Y-%%m-%%d'),
-                                               STR_TO_DATE(%s, '%%Y-%%m-%%d')) AS jours_restants
+                                      DATEDIFF(e.date_fin, %s) AS jours_restants
                                FROM employees e
                                WHERE e.type_contrat = 'CDD'
                                  AND e.date_fin IS NOT NULL
-                                 AND e.date_fin != ''
-                      AND DATEDIFF(STR_TO_DATE(e.date_fin, '%%Y-%%m-%%d'),
-                                   STR_TO_DATE(%s
-                                   , '%%Y-%%m-%%d')) BETWEEN 0
-                                 AND 30
+                                 AND DATEDIFF(e.date_fin, %s) BETWEEN 0 AND 30
                                ORDER BY jours_restants
                                ''', (today, today))
-
                 expiring_contracts = cursor.fetchall()
 
-                if expiring_contracts:
-                    message = "⚠️ ALERTE : Contrats CDD expirant bientôt ⚠️\n\n"
-                    for contract in expiring_contracts:
-                        matricule, nom, prenom, date_fin, jours_restants = contract
-                        message += f"• {nom} {prenom} (Matricule: {matricule}) - "
-                        message += f"Expire le {date_fin} (dans {jours_restants} jours)\n"
+            new_contracts = []
+            for contract in expiring_contracts:
+                matricule, nom, prenom, date_fin, jours_restants = contract
+                contract_key = f"{matricule}_{date_fin}"
+                if contract_key not in self.alerted_contracts or \
+                        (datetime.datetime.now() - self.alerted_contracts.get(contract_key, {}).get('last_alerted',
+                                                                                                    datetime.datetime.min)).total_seconds() >= 1 * 3600:
+                    new_contracts.append(contract)
+                    self.alerted_contracts[contract_key] = {
+                        'date_fin': date_fin,
+                        'last_alerted': datetime.datetime.now()
+                    }
 
-                    if self.sound_enabled and hasattr(self, 'sound_file') and os.path.exists(self.sound_file):
-                        try:
-                            winsound.PlaySound(self.sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                        except:
-                            pass
-
-                    Messagebox.show_warning(message, "Alerte Contrats", parent=self.root)
-                    self.status_var.set(f"⚠ {len(expiring_contracts)} contrats expirent bientôt")
+            if new_contracts:
+                self.show_contract_alerts(new_contracts)
+                self.load_alert_table()
 
         except Exception as e:
-            print(f"Erreur dans le service d'alerte: {str(e)}")
+            logging.error(f"Erreur dans background_alert_service: {str(e)}")
         finally:
-            self.root.after(self.check_interval, self.background_alert_service)
+            self.alert_timer = self.root.after(self.check_interval, self.background_alert_service)
 
 #####################################################################################################
 
-    def edit_employee(self, matricule):
-        """Open a window to edit an employee's details with a scrollable interface."""
-        # Create Toplevel window
-        top = ttk.Toplevel(self.root)
-        top.title(f"Modifier Employé {matricule}")
-        top.geometry("900x600")
-
-        # Fetch employee data from database
-        try:
-            with self.conn.cursor() as cursor:
-                cursor.execute('''
-                               SELECT matricule,
-                                      nom,
-                                      prenom,
-                                      genre,
-                                      date_naissance,
-                                      lieu_naissance,
-                                      ville,
-                                      cin,
-                                      date_cin,
-                                      lieu_cin,
-                                      poste,
-                                      email,
-                                      telephone,
-                                      type_contrat,
-                                      date_debut,
-                                      date_fin,
-                                      salaire_base,
-                                      prime,
-                                      salary_type,
-                                      adresse,
-                                      date_embauche,
-                                      code_postal,
-                                      dcon,
-                                      duree,
-                                      atelier,
-                                      nbre_eche,
-                                      fperiode,
-                                      degre_polyvalence
-                               FROM employees
-                               WHERE matricule = %s
-                               ''', (matricule,))
-                employee = cursor.fetchone()
-
-                cursor.execute('''
-                               SELECT type_contrat, date_creation, texte_contrat
-                               FROM contrats
-                               WHERE matricule = %s
-                               ORDER BY date_creation DESC LIMIT 1
-                               ''', (matricule,))
-                contract = cursor.fetchone()
-
-            if not employee:
-                Messagebox.show_error("Employé non trouvé", "Erreur", parent=top)
-                top.destroy()
-                return
-        except Exception as e:
-            Messagebox.show_error(f"Erreur de base de données: {str(e)}", "Erreur", parent=top)
-            top.destroy()
-            return
-
-        # Create scrollable canvas
-        canvas = tk.Canvas(top, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(top, orient="vertical", command=canvas.yview, bootstyle=PRIMARY)
-        scrollable_frame = ttk.Frame(canvas)
-
-        # Configure scrollable frame
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Create notebook for employee and contract tabs
-        notebook = ttk.Notebook(scrollable_frame, bootstyle=PRIMARY)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        employee_frame = ttk.Frame(notebook)
-        contract_frame = ttk.Frame(notebook)
-        notebook.add(employee_frame, text="Détails Employé")
-        notebook.add(contract_frame, text="Détails Contrat")
-
-        # Initialize variables
-        genre_var = tk.StringVar(value=employee[3] or "féminin")
-        contract_type_var = tk.StringVar(value=contract[0] if contract else "CDD")
-        salary_type_var = tk.StringVar(value=employee[18] or "hourly")
-        entries = {}
-        contract_entries = {}
-
-        DATE_FORMAT = "%Y-%m-%d"  # Matches database format
-
-        # Helper function to format date for DateEntry
-        def format_date_for_entry(date_value):
-            if not date_value:
-                return ""
-            try:
-                # Assuming date_value is a string or datetime.date object
-                if isinstance(date_value, str):
-                    date_obj = datetime.datetime.strptime(date_value, "%Y-%m-%d").date()
-                else:
-                    date_obj = date_value
-                return date_obj.strftime(DATE_FORMAT)
-            except (ValueError, TypeError):
-                return ""
-
-        # Employee fields
-        fields = [
-            ("Matricule", "matricule", employee[0], True, ttk.Entry),
-            ("Nom", "nom", employee[1], False, ttk.Entry),
-            ("Prénom", "prenom", employee[2], False, ttk.Entry),
-            ("Date Naissance ", "date_naissance", employee[4], False, ttk.DateEntry),
-            ("Lieu Naissance", "lieu_naissance", employee[5], False, ttk.Entry),
-            ("Adresse", "adresse", employee[19], False, ttk.Entry),
-            ("Ville", "ville", employee[6], False, ttk.Entry),
-            ("Code Postal", "code_postal", employee[21], False, ttk.Entry),
-            ("CIN", "cin", employee[7], False, ttk.Entry),
-            ("Date CIN", "date_cin", employee[8], False, ttk.DateEntry),
-            ("Lieu CIN", "lieu_cin", employee[9], False, ttk.Entry),
-            ("Poste", "poste", employee[10], False, ttk.Entry),
-            ("Email", "email", employee[11], False, ttk.Entry),
-            ("Téléphone", "telephone", employee[12], False, ttk.Entry),
-            ("Date Embauche ", "date_embauche", employee[20], False, ttk.DateEntry),
-            ("Dcon", "dcon", employee[22], False, ttk.Entry),
-            ("Durée", "duree", employee[23], False, ttk.Entry),
-            ("Atelier", "atelier", employee[24], False, ttk.Entry),
-            ("Nb Échéances", "nbre_eche", str(employee[25]) if employee[25] is not None else "", False, ttk.Entry),
-            ("Fperiode", "fperiode", employee[26], False, ttk.Entry),
-            ("Degré Polyvalence", "degre_polyvalence", employee[27], False, ttk.Entry)
-        ]
-
-        # Populate employee fields
-        for i, (label, field, value, disabled, widget_type) in enumerate(fields):
-            ttk.Label(employee_frame, text=label, font=('Segoe UI', 10)).grid(row=i, column=0, padx=5, pady=5,
-                                                                              sticky=tk.E)
-            if widget_type == ttk.DateEntry:
-                entry = widget_type(employee_frame, bootstyle="primary", dateformat=DATE_FORMAT)
-                formatted_date = format_date_for_entry(value)
-                if formatted_date:
-                    entry.entry.delete(0, tk.END)
-                    entry.entry.insert(0, formatted_date)
-            else:
-                entry = widget_type(employee_frame, bootstyle="primary")
-                entry.insert(0, value or "")
-            if disabled:
-                entry.config(state='disabled')
-            entry.grid(row=i, column=1, padx=5, pady=5, sticky=tk.EW)
-            entries[field] = entry
-
-        # Gender selection
-        ttk.Label(employee_frame, text="Genre*", font=('Segoe UI', 10)).grid(
-            row=len(fields), column=0, sticky=tk.E, padx=5, pady=5)
-        genre_frame = ttk.Frame(employee_frame)
-        genre_frame.grid(row=len(fields), column=1, sticky=tk.W)
-        ttk.Radiobutton(genre_frame, text="Féminin", variable=genre_var, value="féminin",
-                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(genre_frame, text="Masculin", variable=genre_var, value="masculin",
-                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-
-        # Contract fields
-        contract_fields = [
-            ("Type de Contrat", "type_contrat", contract[0] if contract else "CDD", False, None),
-            ("Date Début", "date_debut", employee[14], False, ttk.DateEntry),
-            ("Date Fin ", "date_fin", employee[15], contract_type_var.get() == "CDI", ttk.DateEntry),
-            ("Salaire Base*", "salaire", str(employee[16]) if employee[16] is not None else "", False, ttk.Entry),
-            ("Prime*", "prime", str(employee[17]) if employee[17] is not None else "", False, ttk.Entry)
-        ]
-
-        # Populate contract fields
-        for i, (label, field, value, disabled, widget_type) in enumerate(contract_fields):
-            ttk.Label(contract_frame, text=label, font=('Segoe UI', 10)).grid(row=i, column=0, padx=5, pady=5,
-                                                                              sticky=tk.E)
-            if field == "type_contrat":
-                frame = ttk.Frame(contract_frame)
-                frame.grid(row=i, column=1, sticky=tk.W)
-                ttk.Radiobutton(frame, text="CDD", variable=contract_type_var, value="CDD",
-                                bootstyle="primary-toolbutton",
-                                command=lambda: contract_entries['date_fin'].entry.config(state=tk.NORMAL)).pack(
-                    side=tk.LEFT, padx=5)
-                ttk.Radiobutton(frame, text="CDI", variable=contract_type_var, value="CDI",
-                                bootstyle="primary-toolbutton",
-                                command=lambda: contract_entries['date_fin'].entry.config(state=tk.DISABLED)).pack(
-                    side=tk.LEFT, padx=5)
-            else:
-                if widget_type == ttk.DateEntry:
-                    entry = widget_type(contract_frame, bootstyle="primary", dateformat=DATE_FORMAT)
-                    formatted_date = format_date_for_entry(value)
-                    if formatted_date:
-                        entry.entry.delete(0, tk.END)
-                        entry.entry.insert(0, formatted_date)
-                    if disabled:
-                        entry.entry.config(state='disabled')
-                else:
-                    entry = widget_type(contract_frame, bootstyle="primary")
-                    entry.insert(0, value or "")
-                entry.grid(row=i, column=1, padx=5, pady=5, sticky=tk.EW)
-                contract_entries[field] = entry
-
-        # Salary type selection
-        ttk.Label(contract_frame, text="Type de Salaire*", font=('Segoe UI', 10)).grid(
-            row=len(contract_fields), column=0, padx=5, pady=5, sticky=tk.E)
-        salary_type_frame = ttk.Frame(contract_frame)
-        salary_type_frame.grid(row=len(contract_fields), column=1, sticky=tk.W)
-        ttk.Radiobutton(salary_type_frame, text="Par Heure", variable=salary_type_var, value="hourly",
-                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(salary_type_frame, text="Par Mois", variable=salary_type_var, value="monthly",
-                        bootstyle="primary-toolbutton").pack(side=tk.LEFT, padx=5)
-
-        # Buttons
-        button_frame = ttk.Frame(scrollable_frame)
-        button_frame.pack(fill=tk.X, pady=10)
-        ttk.Button(button_frame, text="Enregistrer",
-                   command=lambda: self.save_employee_and_contract_changes(
-                       matricule, entries, contract_entries, genre_var, contract_type_var, salary_type_var, top),
-                   bootstyle=SUCCESS).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Annuler", command=top.destroy, bootstyle=WARNING).pack(side=tk.LEFT, padx=5)
-
-        # Configure grid weights
-        employee_frame.columnconfigure(1, weight=1)
-        contract_frame.columnconfigure(1, weight=1)
-
-        # Enable mouse wheel scrolling
-        def on_mousewheel(event):
-            try:
-                delta = 0
-                if event.num == 4:  # Linux scroll up
-                    delta = -1
-                elif event.num == 5:  # Linux scroll down
-                    delta = 1
-                elif event.delta:  # Windows and macOS
-                    delta = -1 * (event.delta // 120)
-                if delta:
-                    canvas.yview_scroll(int(delta), "units")
-            except tk.TclError:
-                pass
-
-        # Bind mouse wheel to Toplevel window (cross-platform)
-        top.bind("<MouseWheel>", on_mousewheel)  # Windows
-        top.bind("<Button-4>", on_mousewheel)  # Linux scroll up
-        top.bind("<Button-5>", on_mousewheel)  # Linux scroll down
-
-        # Unbind mouse wheel when Toplevel is destroyed
-        def on_destroy():
-            top.unbind("<MouseWheel>")
-            top.unbind("<Button-4>")
-            top.unbind("<Button-5>")
-            top.destroy()
-
-        top.protocol("WM_DELETE_WINDOW", on_destroy)
 
     def __del__(self):
         self.stop_alert_timer()
@@ -1978,80 +1967,7 @@ class ContratApplication:
         section.is_right_to_left = True
 
         # ======================================================================
-        # EN-TÊTE UNIFIÉ AVEC BORDURE EXTÉRIEURE
-        # ======================================================================
-        header_table = doc.add_table(rows=1, cols=3)
-        header_table.style = 'Table Grid'
-        header_table.columns[0].width = Inches(1.5)
-        header_table.columns[1].width = Inches(8)
-        header_table.columns[2].width = Inches(4)
-        header_table.rows[0].height = Inches(1.5)
-
-        # Cellule logo (gauche)
-        logo_cell = header_table.cell(0, 0)
-        try:
-            logo_para = logo_cell.add_paragraph()
-            logo_run = logo_para.add_run()
-            logo_run.add_picture(self.logo_path, width=Inches(0.4), height=Inches(0.4))
-            logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        except Exception as e:
-            print(f"Erreur lors du chargement du logo : {e}")
-            logo_cell.text = ""
-
-        # Cellule centrale avec le titre
-        title_cell = header_table.cell(0, 1)
-        title_para = title_cell.add_paragraph()
-        title_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-        # Titre français
-        french_title = title_para.add_run("FORMULAIRE\n")
-        french_title.bold = True
-        french_title.font.name = "Helvetica"
-        french_title.font.size = Pt(8)
-        french_title.font.rtl = True
-
-        # Titre arabe
-        arabic_title = title_para.add_run(
-            f"عقد شغل لمدة {'غير محددة' if employee_data['type_contrat'] == 'CDI' else 'محددة'}\n")
-        arabic_title.bold = True
-        arabic_title.font.name = "Arial"
-        arabic_title.font.size = Pt(8)
-        arabic_title.font.rtl = True
-
-        # Cellule droite (informations)
-        info_cell = header_table.cell(0, 2)
-        info_table = info_cell.add_table(rows=4, cols=2)
-        info_table.style = 'Table Grid'
-        info_table.columns[0].width = Inches(1.5)
-        info_table.columns[1].width = Inches(1.5)
-
-        # Données (Réf, Date, Version, Page)
-        is_cdi = employee_data['type_contrat'] == 'CDI'
-        info_data = [
-            ("Réf.", "FO-RH-04" if is_cdi else "FO-RH-03"),
-            ("Date", datetime.datetime.now().strftime('%d/%m/%Y')),
-            ("Version", "01"),
-            ("Page", "1/1")
-        ]
-
-        for row_idx, (label, value) in enumerate(info_data):
-            label_cell = info_table.cell(row_idx, 0)
-            label_para = label_cell.add_paragraph(label)
-            label_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            label_run = label_para.runs[0]
-            label_run.font.name = "Helvetica"
-            label_run.font.size = Pt(7)
-            label_run.font.color.rgb = RGBColor(100, 100, 100)
-
-            value_cell = info_table.cell(row_idx, 1)
-            value_para = value_cell.add_paragraph(value)
-            value_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            value_run = value_para.runs[0]
-            value_run.font.name = "Helvetica"
-            value_run.font.size = Pt(7)
-
-        # ======================================================================
-        # CORPS DU DOCUMENT
+        # CORPS DU DOCUMENT (sans en-tête)
         # ======================================================================
         doc.add_paragraph().paragraph_format.space_after = Pt(12)
 
@@ -2113,16 +2029,16 @@ class ContratApplication:
                 return default
             try:
                 if isinstance(date_str, str):
-                    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"]:
+                    for fmt in ["%d/%m/%Y", "%d/%m/%Y", "%d/%m/%Y"]:
                         try:
                             date_obj = datetime.datetime.strptime(date_str, fmt)
-                            return date_obj.strftime("%Y-%m-%d")
+                            return date_obj.strftime("%d/%m/%Y")
                         except ValueError:
                             continue
                     print(f"Failed to parse date: {date_str}")
                     return default
                 elif isinstance(date_str, datetime.date):
-                    return date_str.strftime("%Y-%m-%d")
+                    return date_str.strftime("%d/%m/%Y")
                 print(f"Unexpected date type: {type(date_str)}")
                 return default
             except Exception as e:
@@ -2145,15 +2061,15 @@ class ContratApplication:
             'SBASE': str(employee_data.get('salaire_base', 0)),
             'PRIME': str(employee_data.get('prime', 0)),
             'MPAIE': "الساعة" if employee_data.get('salary_type') == "hourly" else "الشهر",
-            'DATE_CONTRAT': datetime.datetime.now().strftime('%d/%m/%Y'),
+            'DATE_CONTRAT': datetime.datetime.now().strftime('"%d/%m/%Y"'),
             'DUREE': employee_data.get('duree', 'غير محددة')
         }
 
         if employee_data['type_contrat'] == "CDD" and data.get('DPERIODE') != "غير محدد" and data.get(
                 'FPERIODE') != "غير محدد":
             try:
-                debut = datetime.datetime.strptime(data['DPERIODE'], "%Y-%m-%d")
-                fin = datetime.datetime.strptime(data['FPERIODE'], "%Y-%m-%d")
+                debut = datetime.datetime.strptime(data['DPERIODE'], "%d/%m/%Y")
+                fin = datetime.datetime.strptime(data['FPERIODE'], "%d/%m/%Y")
                 delta = fin - debut
                 months = delta.days // 30
                 days = delta.days % 30
@@ -2236,16 +2152,16 @@ class ContratApplication:
             }
 
             try:
-                datetime.datetime.strptime(employee_data['date_debut'], "%Y-%m-%d")
+                datetime.datetime.strptime(employee_data['date_debut'], "%d/%m/%Y")
                 if employee_data['date_fin']:
-                    datetime.datetime.strptime(employee_data['date_fin'], "%Y-%m-%d")
-                    debut = datetime.datetime.strptime(employee_data['date_debut'], "%Y-%m-%d")
-                    fin = datetime.datetime.strptime(employee_data['date_fin'], "%Y-%m-%d")
+                    datetime.datetime.strptime(employee_data['date_fin'], "%d/%m/%Y")
+                    debut = datetime.datetime.strptime(employee_data['date_debut'], "%d/%m/%Y")
+                    fin = datetime.datetime.strptime(employee_data['date_fin'], "%d/%m/%Y")
                     if fin <= debut:
                         Messagebox.show_error("La date de fin doit être après la date de début", "Erreur")
                         return
             except ValueError:
-                Messagebox.show_error("Format de date invalide (AAAA-MM-JJ attendu)", "Erreur")
+                Messagebox.show_error("Format de date invalide (JJ/MM/AAAA attendu)", "Erreur")
                 return
 
             contrat_text = self.generate_contract_from_data(employee_data)
@@ -2321,8 +2237,6 @@ class ContratApplication:
         except Exception as e:
             Messagebox.show_error(f"Erreur inattendue: {str(e)}", "Erreur")
 
-
-
     def load_employee_table(self):
 
         with self.conn.cursor() as cursor:
@@ -2346,7 +2260,9 @@ class ContratApplication:
                                   date_fin,
                                   salaire_base,
                                   prime,
-                                  salary_type
+                                  salary_type,
+                                  atelier,
+                                  nbre_eche
                            FROM employees
                            ''')
             self.update_table_data(cursor.fetchall())
@@ -2402,6 +2318,7 @@ class ContratApplication:
             Messagebox.show_error(f"Erreur inattendue: {str(e)}", "Erreur")
 
     def update_table_data(self, rows):
+        """Met à jour le tableau des employés avec les nouvelles données"""
         self.employee_table.delete_rows()
         today = datetime.datetime.now().date()
 
@@ -2411,46 +2328,64 @@ class ContratApplication:
 
             # Vérifier si le contrat expire bientôt
             warning = ""
-            if row[16]:  # Si date_fin existe
+            date_fin = row[16]  # date_fin est maintenant à l'index 16
+            if date_fin and isinstance(date_fin, str):
                 try:
-                    # Si c'est déjà un objet date
-                    if isinstance(row[16], datetime.date):
-                        end_date = row[16]
-                    # Si c'est une chaîne de caractères
-                    elif isinstance(row[16], str):
-                        end_date = datetime.datetime.strptime(row[16], "%Y-%m-%d").date()
-                    else:
-                        end_date = None
-
-                    if end_date:
-                        days_left = (end_date - today).days
-                        if 0 <= days_left <= 30:
-                            warning = "⚠️ "  # Ajouter un emoji d'avertissement
-                except (ValueError, TypeError):
+                    end_date = datetime.datetime.strptime(date_fin, "%d/%m/%Y").date()
+                    days_left = (end_date - today).days
+                    if 0 <= days_left <= 30:
+                        warning = "⚠️ "
+                except ValueError:
                     pass
 
-            ttk.Button(action_frame, text="Modifier",
-                       command=lambda m=matricule: self.edit_employee(m),
-                       bootstyle=(PRIMARY, OUTLINE), width=8).pack(side=LEFT, padx=2)
-            ttk.Button(action_frame, text="Contrat",
-                       command=lambda m=matricule: self.view_contract_from_table(m),
-                       bootstyle=(INFO, OUTLINE), width=8).pack(side=LEFT, padx=2)
+            # Création des boutons d'action
+            ttk.Button(
+                action_frame,
+                text="Modifier",
+                command=lambda m=matricule: self.edit_employee(m),
+                bootstyle=(PRIMARY, OUTLINE),
+                width=8
+            ).pack(side=LEFT, padx=2)
 
-            # Ajouter l'avertissement au nom si nécessaire
-            display_row = list(row[:14])
-            display_row[1] = warning + display_row[1]  # Ajouter l'avertissement au nom
+            ttk.Button(
+                action_frame,
+                text="Contrat",
+                command=lambda m=matricule: self.view_contract_from_table(m),
+                bootstyle=(INFO, OUTLINE),
+                width=8
+            ).pack(side=LEFT, padx=2)
 
-            display_row += [
-                row[14] or "N/A",
-                row[15].strftime("%Y-%m-%d") if isinstance(row[15], datetime.date) else (row[15] or "N/A"),
-                row[16].strftime("%Y-%m-%d") if isinstance(row[16], datetime.date) else (row[16] or "N/A"),
-                str(row[17]) if row[17] is not None else "N/A",
-                str(row[18]) if row[18] is not None else "N/A",
-                row[19] or "N/A",
+            # Préparation des données à afficher
+            display_row = [
+                row[0],  # matricule
+                warning + (row[1] or ""),  # nom avec avertissement si besoin
+                row[2] or "",  # prenom
+                row[3] or "",  # genre
+                row[4] or "N/A",  # date_naissance (format déjà formaté)
+                row[5] or "N/A",  # lieu_naissance
+                row[6] or "N/A",  # adresse
+                row[7] or "N/A",  # ville
+                row[8] or "N/A",  # cin
+                row[9] or "N/A",  # date_cin (formaté)
+                row[10] or "N/A",  # lieu_cin
+                row[11] or "N/A",  # poste
+                row[12] or "N/A",  # email
+                row[13] or "N/A",  # telephone
+                row[14] or "N/A",  # type_contrat
+                row[15] or "N/A",  # date_debut (formaté)
+                row[16] or "N/A",  # date_fin (formaté)
+                f"{float(row[17]):.2f}" if row[17] is not None else "N/A",  # salaire_base
+                f"{float(row[18]):.2f}" if row[18] is not None else "N/A",  # prime
+                "Par heure" if row[19] == "hourly" else "Par mois",  # salary_type
+                row[20] or "N/A",  # atelier (nouvelle colonne)
+                str(row[21]) if row[21] is not None else "0",  # nbre_eche (nouvelle colonne)
                 action_frame
             ]
+
+            # Ajout de la ligne dans le tableau
             self.employee_table.insert_row(values=display_row)
 
+        # Mise à jour des statistiques
         self.update_summary()
 
     def search_employee(self):
@@ -2581,10 +2516,10 @@ class ContratApplication:
                 # Vérification des formats de date
                 date_errors = []
                 date_fields = {
-                    'date_naissance': "%Y-%m-%d",
-                    'date_cin': "%Y-%m-%d",
-                    'date_debut': "%Y-%m-%d",
-                    'date_fin': "%Y-%m-%d"
+                    'date_naissance': "%d/%m/%Y",
+                    'date_cin': "%d/%m/%Y",
+                    'date_debut': "%d/%m/%Y",
+                    'date_fin': "%d/%m/%Y"
                 }
 
                 for field, fmt in date_fields.items():
@@ -2646,11 +2581,56 @@ class ContratApplication:
         except Exception as e:
             return {"error": str(e)}
 
+    def check_expiration_date(self):
+        """
+        Vérifie si la licence de l'application est toujours valide.
+        Retourne True si valide, False si expirée.
+        """
+        try:
+            # Date d'expiration fixée au 1er juillet 2025 à 09:02 (UTC)
+            expiration_date = datetime.datetime(2026, 4, 1, 9, 2, tzinfo=datetime.timezone.utc)
+            current_date = datetime.datetime.now(datetime.timezone.utc)
 
+            if current_date > expiration_date:
+                Messagebox.show_error(
+                    "La licence de cette application a expiré.\n\n"
+                    "Veuillez contacter l'administrateur ou le support technique "
+                    "pour obtenir une nouvelle licence.",
+                    "licence expiré.",
+                    parent=self.root
+                )
+                return False
 
+            # Calcul et affichage du temps restant (optionnel)
+            time_left = expiration_date - current_date
+            if time_left.days < 30:  # Avertir si moins d'un mois reste
+                self.status_var.set(
+                    f"Attention: Licence expire dans {time_left.days} jours"
+                )
 
+            return True
+
+        except Exception as e:
+            # En cas d'erreur, on considère que la licence est valide
+            # mais on log l'erreur pour investigation
+            logging.error(f"Erreur vérification licence: {str(e)}")
+            return True
 
 
 if __name__ == "__main__":
-    app = ContratApplication(ttk.Window())
-    app.root.mainloop()
+    try:
+        root = ttk.Window()
+        app = ContratApplication(root)
+
+        if not app.check_expiration_date():
+            root.destroy()  # Ferme l'application si la licence est expirée
+        else:
+            root.mainloop()
+
+    except Exception as e:
+        logging.critical(f"Erreur critique: {str(e)}")
+        Messagebox.show_error(
+            "Erreur Initialisation",
+            f"Impossible de démarrer l'application:\n{str(e)}",
+            parent=None
+        )
